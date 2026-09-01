@@ -394,6 +394,9 @@ Two points to note:
   CIDR allowlisting, header sanitization, gzip, hashed-asset caching, and the
   audit log still apply.
 
+A deployment reference for Nginx + Authelia in front of the frp tunnel is in
+[docs/nginx-authelia.md](./docs/nginx-authelia.md).
+
 ## Security model
 
 The Host/Origin rewrite restores the privileged APIs and, at the same

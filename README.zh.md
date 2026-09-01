@@ -280,6 +280,8 @@ dsh plugin --profile web update --latest dsh-full-remote
 - `backendHost` 必须是回环地址，通配地址或非回环地址在加载时会被拒绝。
 - `disableTokenAuth: true` 会跳过内置的访问令牌 / 设备会话 / 邀请门：除 CIDR 与头部检查外，所有请求直接转发到后端。仅当外部反向代理（例如 Nginx + Authelia 的 `auth_request` 流程）已完成客户端认证时才应启用。回环专属控制路由（`/dsh-reverse-proxy/*`）、健康检查、CIDR 白名单、头部清洗、gzip、缓存与审计日志仍然生效。
 
+Nginx + Authelia 在 frp 隧道前的部署参考见 [docs/nginx-authelia.md](./docs/nginx-authelia.md)。
+
 ## 安全模型
 
 Host/Origin 改写恢复了特权接口，同时也使 Harness 对远程客户端原有的保护失效。插件提供的访问控制层包括：
