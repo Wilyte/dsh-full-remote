@@ -53,6 +53,7 @@ export const Config = Schema.object({
   trustCloudflareConnectingIp: Schema.boolean().default(false).description('When true and the direct peer is loopback, also trust Cloudflare\'s CF-Connecting-IP header. Enable only for a local Cloudflare connector; other tunnels can relay a client-supplied CF header unchanged.'),
   compressResponses: Schema.boolean().default(true).description('When true, gzip compressible HTTP responses (HTML/JS/CSS/JSON/SVG) for clients that send Accept-Encoding: gzip. SSE, WebSocket, fonts, already-encoded bodies, and responses under 1 KB are not compressed.'),
   cacheHashedAssets: Schema.boolean().default(true).description('When true, add Cache-Control: public, max-age=31536000, immutable on successful hashed /assets/* responses that have no upstream cache header. index.html and /api are never cached.'),
+  disableTokenAuth: Schema.boolean().default(false).description('When true, skip the built-in access-token / device-session / invite gate entirely and forward every request straight to the backend. Intended for deployments where an external reverse proxy (e.g. Nginx + Authelia) already authenticated the client. Control routes stay loopback-only; CIDR allowlist, header sanitization, gzip, caching, and audit logging still apply.'),
 })
 
 /** Validated plugin config: every field carries its Schema default. */
