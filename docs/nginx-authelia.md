@@ -35,9 +35,9 @@ server {
     location / {
         auth_request /authelia/;
         # 未认证时跳到 Authelia 登录页
-        error_page 401 =302 https://auth.example.com;
+        error_page 401 =302 https://auth.example.com/?rd=$scheme://$host$request_uri;
 
-        proxy_pass http://127.0.0.1:7000;  # frp 服务端本地监听端口
+        proxy_pass http://127.0.0.1:8080;  # frp 服务端 HTTP vhost 端口（vhostHTTPPort，默认 8080；若用 TCP 隧道则填该隧道的 remotePort）
         proxy_http_version 1.1;
         proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection "upgrade";
@@ -52,6 +52,8 @@ server {
 
 - `auth_request` 使用 Nginx 子请求验证会话；Authelia 通过
   `X-Original-URL` 回跳，因此该头必须保持 `$scheme://$http_host$request_uri`。
+- `error_page 401` 的 `?rd=` 参数是 Authelia 登录成功后的回跳地址；
+  缺少它，用户登录后会被送回入口而非原本请求的页面。
 - `proxy_pass` 指向 frp 服务端端口，frp 客户端把流量转发到 NAS 上
   dsh-full-remote 的监听地址（默认 127.0.0.1:3081）。
 - WebSocket 需要 `Upgrade` / `Connection` 头透传，否则 Harness 的
