@@ -112,6 +112,11 @@ export interface ProxySpec {
   compressResponses?: boolean
   /** Add immutable Cache-Control on hashed /assets/* 200s with no upstream cache header. Default true. */
   cacheHashedAssets?: boolean
+  /** When true, skip the built-in token/session/invite gate and forward every
+   *  request straight to the backend. Intended for an external reverse proxy
+   *  (e.g. Nginx + Authelia) that already authenticated the client. Control
+   *  routes stay loopback-only. */
+  disableTokenAuth?: boolean
 }
 
 /** ProxySpec after listenProxy resolves defaults and internal helpers. */
@@ -138,6 +143,9 @@ const MAX_TRACKED_LOGIN_IPS = 4096
 /** Mirrors the createSessionStore default so a caller that omits
  *  sessionMaxAgeSeconds still gets a valid cookie Max-Age. */
 const DEFAULT_SESSION_MAX_AGE_SECONDS = 30 * 24 * 3600
+/** Session id used for every forwarded request when disableTokenAuth bypasses
+ *  the built-in login gate. Only feeds connection tracking; never persisted. */
+const EXTERNAL_AUTH_SESSION_ID = 'external-auth'
 
 /** Login / wait pages: allow the tiny auto-submit / poll scripts. */
 const GATE_PAGE_CSP = "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'"
@@ -710,17 +718,24 @@ export function listenProxy(spec: ProxySpec): Promise<ProxyServer> {
       res.end('{"ok":true}\n')
       return
     }
+    if (path.startsWith(spec.controlPrefix)) {
+      drainRequest(req)
+      sendText(res, 403, 'forbidden\n')
+      return
+    }
+    if (spec.disableTokenAuth === true) {
+      // External auth (e.g. Nginx + Authelia) already authenticated the
+      // client: skip login / wait / device pages and session validation,
+      // forward everything else straight to the backend.
+      proxyRequest(req, res, runtimeSpec, EXTERNAL_AUTH_SESSION_ID)
+      return
+    }
     if (path === LOGIN_PATH) {
       await handleLogin(req, res, runtimeSpec)
       return
     }
     if (handleWaitRoutes(req, res, runtimeSpec, path, cookie)) return
     if (await handleDevicePages(req, res, runtimeSpec, path, cookie)) return
-    if (path.startsWith(spec.controlPrefix)) {
-      drainRequest(req)
-      sendText(res, 403, 'forbidden\n')
-      return
-    }
     const session = runtimeSpec.sessionStore.validate(cookie, effectiveRemoteAddress(req, runtimeSpec))
     if (session === undefined) {
       drainRequest(req)
@@ -765,8 +780,63 @@ export function listenProxy(spec: ProxySpec): Promise<ProxyServer> {
     }
     const path = pathnameOf(req.url)
     const cookie = parseCookies(req.headers.cookie)[spec.cookieName]
+    if (path.startsWith(spec.controlPrefix)) {
+      upgradeTracker.fail(upgradeRemote)
+      upgradeTracker.prune()
+      denySocket(socket, '403 Forbidden')
+      spec.audit?.('access.denied', { reason: 'control', remote: upgradeRemote, path: pathnameOf(req.url), upgrade: true })
+      return
+    }
+    if (spec.disableTokenAuth === true) {
+      // External auth already applied; forward the upgrade without a session.
+      const headers = forwardHeaders(req, rewriteAuthority, {
+        tls: tlsEnabled,
+        trustForwardedProto: runtimeSpec.trustForwardedProto(),
+        forwardedFor: upgradeRemote,
+      })
+      headers.connection = 'Upgrade'
+      headers.upgrade = req.headers.upgrade ?? 'websocket'
+      const up = httpRequest({
+        hostname: spec.backendHost,
+        port: spec.backendPort,
+        path: req.url,
+        method: 'GET',
+        headers,
+      })
+      trackUpstream(up)
+      up.setTimeout(spec.upstreamTimeoutMs, () => { up.destroy() })
+      up.on('upgrade', (upRes, upSocket, upHead) => {
+        trackUpstream(upSocket)
+        upgradeTracker.success(upgradeRemote)
+        spec.audit?.('ws.open', { remote: upgradeRemote, path: pathnameOf(req.url), status: upRes.statusCode ?? 101 })
+        spec.log?.({ method: req.method, path: pathnameOf(req.url), status: upRes.statusCode ?? 101, remote: upgradeRemote })
+        writeRawHead(
+          socket,
+          upRes.statusCode ?? 101,
+          upRes.statusMessage ?? 'Switching Protocols',
+          sanitizeUpgradeResponseHeaders(upRes.headers),
+        )
+        if (upHead.length > 0) socket.write(upHead)
+        if (head.length > 0) upSocket.write(head)
+        upSocket.pipe(socket)
+        socket.pipe(upSocket)
+      })
+      up.on('response', (upRes) => {
+        spec.audit?.('ws.reject', { remote: upgradeRemote, path: pathnameOf(req.url), status: upRes.statusCode ?? 502 })
+        upRes.resume()
+        writeRawHead(socket, upRes.statusCode ?? 502, upRes.statusMessage ?? 'Bad Gateway', {
+          ...sanitizeResponseHeaders(upRes.headers),
+          Connection: 'close',
+        })
+        socket.destroy()
+      })
+      up.on('error', () => { socket.destroy() })
+      socket.on('error', () => { up.destroy() })
+      up.end()
+      return
+    }
     const session = runtimeSpec.sessionStore.validate(cookie, upgradeRemote)
-    if (path.startsWith(spec.controlPrefix) || session === undefined) {
+    if (session === undefined) {
       upgradeTracker.fail(upgradeRemote)
       upgradeTracker.prune()
       denySocket(socket, '401 Unauthorized')

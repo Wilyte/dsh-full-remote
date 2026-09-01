@@ -1834,3 +1834,101 @@ describe('proxy teardown', () => {
     assert.equal(second.port, port)
   })
 })
+
+describe('disableTokenAuth external auth bypass', () => {
+  async function bypassProxy(overrides: Record<string, unknown> = {}) {
+    const seen: Array<{ host: string | undefined, marker: string | string[] | undefined }> = []
+    const upgraded = new Set<Duplex>()
+    const backend = createServer((req, res) => {
+      seen.push({ host: req.headers.host, marker: req.headers['x-dsh-reverse-proxy'] })
+      res.writeHead(200, { 'content-type': 'application/json' })
+      res.end(JSON.stringify({ ok: true }))
+    })
+    // The backend must complete the 101 handshake itself: a plain request
+    // handler cannot answer a WebSocket upgrade, so without this the proxy
+    // would relay the backend's 200 instead of a 101.
+    backend.on('upgrade', (_req, socket) => {
+      upgraded.add(socket)
+      socket.once('close', () => upgraded.delete(socket))
+      socket.write([
+        'HTTP/1.1 101 Switching Protocols',
+        'Connection: Upgrade',
+        'Upgrade: websocket',
+        '',
+        '',
+      ].join('\r\n'))
+    })
+    await new Promise<void>((resolve, reject) => {
+      backend.once('error', reject)
+      backend.listen(0, '127.0.0.1', resolve)
+    })
+    cleanups.push(() => new Promise<void>(resolve => {
+      for (const socket of upgraded) socket.destroy()
+      backend.close(() => resolve())
+    }))
+    const proxy = await listenProxy({
+      listenHost: '127.0.0.1',
+      listenPort: 0,
+      backendHost: '127.0.0.1',
+      backendPort: portOf(backend),
+      accessToken: 'irrelevant-token',
+      cookieName: 'session',
+      controlPrefix: '/dsh-reverse-proxy',
+      maxRequestBytes: 4096,
+      upstreamTimeoutMs: 2000,
+      disableTokenAuth: true,
+      ...overrides,
+    })
+    cleanups.push(proxy.close)
+    return { proxy, seen }
+  }
+
+  it('forwards anonymous requests straight to the backend with no cookie', async () => {
+    const { proxy, seen } = await bypassProxy()
+    const response = await http({ port: proxy.port, path: '/api/example' })
+    assert.equal(response.status, 200)
+    assert.deepEqual(JSON.parse(response.body), { ok: true })
+    assert.equal(seen[0].marker, '1')
+  })
+
+  it('skips the login gate: GET /_dsh_reverse_proxy/login reaches the backend', async () => {
+    const { proxy, seen } = await bypassProxy()
+    const response = await http({ port: proxy.port, path: '/_dsh_reverse_proxy/login' })
+    // No login page: the request is proxied, so the backend's JSON arrives.
+    assert.equal(response.status, 200)
+    assert.deepEqual(JSON.parse(response.body), { ok: true })
+    assert.equal(seen.length, 1)
+  })
+
+  it('still blocks control routes with 403', async () => {
+    const { proxy } = await bypassProxy()
+    const response = await http({ port: proxy.port, path: '/dsh-reverse-proxy/status' })
+    assert.equal(response.status, 403)
+  })
+
+  it('still serves the health endpoint', async () => {
+    const { proxy } = await bypassProxy()
+    const response = await http({ port: proxy.port, path: '/_dsh_reverse_proxy/healthz' })
+    assert.equal(response.status, 200)
+    assert.deepEqual(JSON.parse(response.body), { ok: true })
+  })
+
+  it('still applies the CIDR allowlist before bypassing auth', async () => {
+    const { proxy } = await bypassProxy({ ipAllowed: () => false })
+    const response = await http({ port: proxy.port, path: '/api/example' })
+    assert.equal(response.status, 403)
+  })
+
+  it('accepts WebSocket upgrades without a session cookie', async () => {
+    const { proxy } = await bypassProxy()
+    const ws = await wsHandshake({ port: proxy.port, path: '/ws' })
+    assert.equal(ws.status.startsWith('HTTP/1.1 101'), true)
+    ws.socket.destroy()
+  })
+
+  it('still rewrites Host to loopback while bypassing auth', async () => {
+    const { proxy, seen } = await bypassProxy()
+    await http({ port: proxy.port, path: '/api/example' })
+    assert.match(seen[0].host ?? '', /^127\.0\.0\.1:\d+$/)
+  })
+})
