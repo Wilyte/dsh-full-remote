@@ -235,6 +235,7 @@ export function createRuntime(ctx: RuntimeContext, config: RuntimeConfig, deps: 
       tls: scheme() === 'https',
       auditLog: audit.enabled,
       trustForwardedFor: config.trustForwardedFor === true,
+      disableTokenAuth: config.disableTokenAuth === true,
       tunnel: tunnel.status(),
       ...(reason !== undefined ? { reason } : {}),
     }
@@ -347,6 +348,7 @@ export function createRuntime(ctx: RuntimeContext, config: RuntimeConfig, deps: 
         trustCloudflareConnectingIp: () => config.trustCloudflareConnectingIp === true || tunnelLive(),
         compressResponses: config.compressResponses !== false,
         cacheHashedAssets: config.cacheHashedAssets !== false,
+        disableTokenAuth: config.disableTokenAuth === true,
         log: config.logRequests
           ? entry => { ctx.logger.debug(`reverse-proxy: ${entry.remote ?? '-'} ${entry.method} ${entry.path} -> ${entry.status}`) }
           : undefined,
