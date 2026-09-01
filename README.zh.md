@@ -268,6 +268,7 @@ dsh plugin --profile web update --latest dsh-full-remote
     tlsKeyFile: ""
     compressResponses: true      # ≥1KB 的 JS/CSS/JSON/HTML 做 gzip；跳过 SSE/WebSocket/字体/栅栏页
     cacheHashedAssets: true      # 仅给带 hash 的 /assets/* 加长期 Cache-Control
+    disableTokenAuth: false      # true: 跳过内置令牌/会话门；认证完全由外部网关（如 Nginx + Authelia）负责
 ```
 
 完整选项、默认值与校验规则定义在包内 `Config` schema（`src/config.ts`）及
@@ -277,6 +278,7 @@ dsh plugin --profile web update --latest dsh-full-remote
 
 - 安装插件会钉住应用内目录选择器，使手机可以添加工作区。默认禁用官方自适应选择器，并在组合里还没有官方 browse 行时于运行时创建它；只有明确需要宿主原生选择器、且不需要远程目录浏览时，才在启动前设置 `DSH_FULL_REMOTE_USE_NATIVE_PICKER=1`。
 - `backendHost` 必须是回环地址，通配地址或非回环地址在加载时会被拒绝。
+- `disableTokenAuth: true` 会跳过内置的访问令牌 / 设备会话 / 邀请门：除 CIDR 与头部检查外，所有请求直接转发到后端。仅当外部反向代理（例如 Nginx + Authelia 的 `auth_request` 流程）已完成客户端认证时才应启用。回环专属控制路由（`/dsh-reverse-proxy/*`）、健康检查、CIDR 白名单、头部清洗、gzip、缓存与审计日志仍然生效。
 
 ## 安全模型
 

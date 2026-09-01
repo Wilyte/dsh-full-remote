@@ -369,6 +369,7 @@ Common options:
     tlsKeyFile: ""
     compressResponses: true      # gzip JS/CSS/JSON/HTML ≥1KB; skip SSE/WebSocket/fonts/gate pages
     cacheHashedAssets: true      # immutable Cache-Control on hashed /assets/* only
+    disableTokenAuth: false      # true: skip built-in token/session gate; external auth (e.g. Nginx + Authelia) is the only gate
 ```
 
 The complete option list, with defaults and validation, is defined in the
@@ -385,6 +386,13 @@ Two points to note:
   remote directory browsing.
 - `backendHost` must remain a loopback address. A wildcard or non-loopback
   value is rejected at load time.
+- `disableTokenAuth: true` bypasses the built-in access-token / device-session /
+  invite gate: every request is forwarded straight to the backend after CIDR and
+  header checks. Use this only when an external reverse proxy (for example Nginx
+  with the Authelia `auth_request` flow) already authenticated the client. The
+  loopback-only control routes (`/dsh-reverse-proxy/*`), the health endpoint,
+  CIDR allowlisting, header sanitization, gzip, hashed-asset caching, and the
+  audit log still apply.
 
 ## Security model
 
