@@ -389,8 +389,12 @@ Two points to note:
 - `disableTokenAuth: true` bypasses the built-in access-token / device-session /
   invite gate: every request is forwarded straight to the backend after CIDR and
   header checks. Use this only when an external reverse proxy (for example Nginx
-  with the Authelia `auth_request` flow) already authenticated the client. The
-  loopback-only control routes (`/dsh-reverse-proxy/*`), the health endpoint,
+  with the Authelia `auth_request` flow) already authenticated the client. When
+  enabled, the proxy's **listen address `listenHost` must stay loopback
+  `127.0.0.1`** and be reachable only through that already-authenticated
+  tunnel/gateway — a non-loopback `listenHost` (the LAN IP the UI suggests for
+  phone-on-WiFi) would expose the DSH backend unauthenticated to the whole LAN.
+  The loopback-only control routes (`/dsh-reverse-proxy/*`), the health endpoint,
   CIDR allowlisting, header sanitization, gzip, hashed-asset caching, and the
   audit log still apply.
 
@@ -415,7 +419,12 @@ access-control layer provided by this plugin consists of:
   rightmost `X-Forwarded-For` value is trusted for CIDR / rate-limit / audit.
   `CF-Connecting-IP` needs the separate, Cloudflare-only
   `trustCloudflareConnectingIp` opt-in; loopback or malformed values are
-  never trusted. Keep both disabled for direct LAN access.
+  never trusted. Keep both disabled for direct LAN access. Behind the frp
+  deployment, the real client IP is only visible when **all three** hold:
+  (1) Nginx keeps `X-Forwarded-For $proxy_add_x_forwarded_for`; (2) frp
+  forwards that header unchanged to the NAS; (3) `trustForwardedFor: true`
+  is set. Otherwise every client collapses to loopback `127.0.0.1` (always
+  allowed) and the CIDR allowlist silently fails.
 
 The access token must be treated as a secret. Terminate TLS on the public
 side of the tunnel. For LAN use without a tunnel, set

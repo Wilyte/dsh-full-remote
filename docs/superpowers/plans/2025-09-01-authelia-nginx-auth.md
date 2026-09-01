@@ -503,8 +503,12 @@ git commit -m "feat(client): show external-auth mode badge in reverse proxy pane
 - `disableTokenAuth: true` bypasses the built-in access-token / device-session /
   invite gate: every request is forwarded straight to the backend after CIDR and
   header checks. Use this only when an external reverse proxy (for example Nginx
-  with the Authelia `auth_request` flow) already authenticated the client. The
-  loopback-only control routes (`/dsh-reverse-proxy/*`), the health endpoint,
+  with the Authelia `auth_request` flow) already authenticated the client. When
+  enabled, the proxy's **listen address `listenHost` must stay loopback
+  `127.0.0.1`** and be reachable only through that already-authenticated
+  tunnel/gateway — a non-loopback `listenHost` (the LAN IP the UI suggests for
+  phone-on-WiFi) would expose the DSH backend unauthenticated to the whole LAN.
+  The loopback-only control routes (`/dsh-reverse-proxy/*`), the health endpoint,
   CIDR allowlisting, header sanitization, gzip, hashed-asset caching, and the
   audit log still apply.
 ```
@@ -520,7 +524,7 @@ git commit -m "feat(client): show external-auth mode badge in reverse proxy pane
 并在"Two points to note"列表后追加：
 
 ```markdown
-- `disableTokenAuth: true` 会跳过内置的访问令牌 / 设备会话 / 邀请门：除 CIDR 与头部检查外，所有请求直接转发到后端。仅当外部反向代理（例如 Nginx + Authelia 的 `auth_request` 流程）已完成客户端认证时才应启用。回环专属控制路由（`/dsh-reverse-proxy/*`）、健康检查、CIDR 白名单、头部清洗、gzip、缓存与审计日志仍然生效。
+- `disableTokenAuth: true` 会跳过内置的访问令牌 / 设备会话 / 邀请门：除 CIDR 与头部检查外，所有请求直接转发到后端。仅当外部反向代理（例如 Nginx + Authelia 的 `auth_request` 流程）已完成客户端认证时才应启用。启用后，代理的**监听地址 `listenHost` 必须保持回环 `127.0.0.1`**，且只能通过已完成认证的隧道 / 网关可达——若把 `listenHost` 配成局域网 IP（UI 引导的手机同 WiFi 直连场景），整个局域网都能无认证直达 DSH 后端。回环专属控制路由（`/dsh-reverse-proxy/*`）、健康检查、CIDR 白名单、头部清洗、gzip、缓存与审计日志仍然生效。
 ```
 
 - [ ] **Step 3: 提交**
@@ -607,10 +611,17 @@ server {
   dsh-full-remote 的监听地址（默认 127.0.0.1:3081）。
 - WebSocket 需要 `Upgrade` / `Connection` 头透传，否则 Harness 的
   实时会话无法工作。
-- 必须在 dsh-full-remote 端保持 `disableTokenAuth: true` 与回环
-  `backendHost`；控制路由 `/dsh-reverse-proxy/*` 仍只允许本机访问。
-- 若希望审计 / 限速看到真实客户端 IP，在 Nginx 侧保留
-  `X-Forwarded-For` 并在 dsh-full-remote 开启 `trustForwardedFor: true`。
+- 必须在 dsh-full-remote 端保持 `disableTokenAuth: true`，且代理的**监听地址
+  `listenHost` 必须保持回环 `127.0.0.1`**（仅本机 frp 客户端 / 已完成认证的
+  网关可达）。开启 `disableTokenAuth` 后令牌门被移除：若把 `listenHost` 配成
+  局域网 IP（UI 引导的手机同 WiFi 直连场景），整个局域网都能无认证直达 DSH
+  后端。`backendHost`（DSH Web 后端）本身已被校验强制回环，不是这里的风险点；
+  控制路由 `/dsh-reverse-proxy/*` 仍只允许本机访问。
+- 若希望 CIDR 白名单 / 审计 / 限速看到真实客户端 IP，**三个条件必须同时成立**：
+  (1) Nginx 侧保留 `X-Forwarded-For $proxy_add_x_forwarded_for`；
+  (2) frp 将该头原样转发到 NAS；
+  (3) dsh-full-remote 开启 `trustForwardedFor: true`。
+  否则所有客户端都会落到回环 `127.0.0.1`（回环恒被允许），CIDR 白名单将**静默失效**。
 ```
 
 - [ ] **Step 2: README 添加文档链接**

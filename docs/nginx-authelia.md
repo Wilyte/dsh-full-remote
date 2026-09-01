@@ -58,7 +58,14 @@ server {
   dsh-full-remote 的监听地址（默认 127.0.0.1:3081）。
 - WebSocket 需要 `Upgrade` / `Connection` 头透传，否则 Harness 的
   实时会话无法工作。
-- 必须在 dsh-full-remote 端保持 `disableTokenAuth: true` 与回环
-  `backendHost`；控制路由 `/dsh-reverse-proxy/*` 仍只允许本机访问。
-- 若希望审计 / 限速看到真实客户端 IP，在 Nginx 侧保留
-  `X-Forwarded-For` 并在 dsh-full-remote 开启 `trustForwardedFor: true`。
+- 必须在 dsh-full-remote 端保持 `disableTokenAuth: true`，且代理的**监听地址
+  `listenHost` 必须保持回环 `127.0.0.1`**（仅本机 frp 客户端 / 已完成认证的
+  网关可达）。开启 `disableTokenAuth` 后令牌门被移除：若把 `listenHost` 配成
+  局域网 IP（UI 引导的手机同 WiFi 直连场景），整个局域网都能无认证直达 DSH
+  后端。`backendHost`（DSH Web 后端）本身已被校验强制回环，不是这里的风险点；
+  控制路由 `/dsh-reverse-proxy/*` 仍只允许本机访问。
+- 若希望 CIDR 白名单 / 审计 / 限速看到真实客户端 IP，**三个条件必须同时成立**：
+  (1) Nginx 侧保留 `X-Forwarded-For $proxy_add_x_forwarded_for`；
+  (2) frp 将该头原样转发到 NAS；
+  (3) dsh-full-remote 开启 `trustForwardedFor: true`。
+  否则所有客户端都会落到回环 `127.0.0.1`（回环恒被允许），CIDR 白名单将**静默失效**。

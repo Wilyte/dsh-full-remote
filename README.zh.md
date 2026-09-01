@@ -278,7 +278,7 @@ dsh plugin --profile web update --latest dsh-full-remote
 
 - 安装插件会钉住应用内目录选择器，使手机可以添加工作区。默认禁用官方自适应选择器，并在组合里还没有官方 browse 行时于运行时创建它；只有明确需要宿主原生选择器、且不需要远程目录浏览时，才在启动前设置 `DSH_FULL_REMOTE_USE_NATIVE_PICKER=1`。
 - `backendHost` 必须是回环地址，通配地址或非回环地址在加载时会被拒绝。
-- `disableTokenAuth: true` 会跳过内置的访问令牌 / 设备会话 / 邀请门：除 CIDR 与头部检查外，所有请求直接转发到后端。仅当外部反向代理（例如 Nginx + Authelia 的 `auth_request` 流程）已完成客户端认证时才应启用。回环专属控制路由（`/dsh-reverse-proxy/*`）、健康检查、CIDR 白名单、头部清洗、gzip、缓存与审计日志仍然生效。
+- `disableTokenAuth: true` 会跳过内置的访问令牌 / 设备会话 / 邀请门：除 CIDR 与头部检查外，所有请求直接转发到后端。仅当外部反向代理（例如 Nginx + Authelia 的 `auth_request` 流程）已完成客户端认证时才应启用。启用后，代理的**监听地址 `listenHost` 必须保持回环 `127.0.0.1`**，且只能通过已完成认证的隧道 / 网关可达——若把 `listenHost` 配成局域网 IP（UI 引导的手机同 WiFi 直连场景），整个局域网都能无认证直达 DSH 后端。回环专属控制路由（`/dsh-reverse-proxy/*`）、健康检查、CIDR 白名单、头部清洗、gzip、缓存与审计日志仍然生效。
 
 Nginx + Authelia 在 frp 隧道前的部署参考见 [docs/nginx-authelia.md](./docs/nginx-authelia.md)。
 
@@ -291,7 +291,7 @@ Host/Origin 改写恢复了特权接口，同时也使 Harness 对远程客户�
 - 登录失败计入固定延时，并按 IP 返回 `429` 锁定；
 - 控制接口（`/dsh-reverse-proxy/*`）仅限回环地址访问，需要控制头，且永远不会被公网代理转发；
 - 剥离可伪造的转发头与逐跳头，代理自身的 Cookie 不会到达后端；
-- 可选 `trustForwardedFor`：开启后仅信任回环对端传来的转发头，用于 CIDR / 限流 / 审计，使本地隧道能识别真实客户端 IP。只有额外开启 `trustCloudflareConnectingIp` 才读取 Cloudflare 的 `CF-Connecting-IP`，否则取 `X-Forwarded-For` 最右值；回环或非法的转发值一律不信任。局域网直连请保持关闭。
+- 可选 `trustForwardedFor`：开启后仅信任回环对端传来的转发头，用于 CIDR / 限流 / 审计，使本地隧道能识别真实客户端 IP。只有额外开启 `trustCloudflareConnectingIp` 才读取 Cloudflare 的 `CF-Connecting-IP`，否则取 `X-Forwarded-For` 最右值；回环或非法的转发值一律不信任。局域网直连请保持关闭。在 frp 部署下，真实客户端 IP 仅在**三个条件同时成立**时可见：(1) Nginx 侧保留 `X-Forwarded-For $proxy_add_x_forwarded_for`；(2) frp 将该头原样转发到 NAS；(3) 开启 `trustForwardedFor: true`。否则所有客户端都会落到回环 `127.0.0.1`（回环恒被允许），CIDR 白名单将静默失效。
 
 访问令牌须按机密保管。公网侧应终止 TLS。局域网直连可配置 `tlsCertFile` / `tlsKeyFile`（例如用 [mkcert](https://github.com/FiloSottile/mkcert) 生成）。
 

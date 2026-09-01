@@ -153,10 +153,11 @@ server {
 ## 6. 安全考虑
 
 1. **认证层唯一性**：启用 `disableTokenAuth` 后，必须确保 Nginx + Authelia 层正确配置，否则任何请求都可直达 DSH 后端
-2. **控制路由隔离**：`/dsh-reverse-proxy/*` 仍限 loopback，防止远程通过公网隧道修改代理配置
-3. **审计日志**：建议保留审计日志，即使无令牌认证，仍可记录请求来源
-4. **CIDR 白名单**：可在 dsh-full-remote 和 Nginx 两端同时配置，增加纵深防御
-5. **TLS**：Nginx 端必须配置 TLS（已通过 ssl_certificate 确保），frp 隧道内流量建议加密
+2. **监听地址必须回环**：`disableTokenAuth: true` 移除了令牌门，因此代理自身的监听地址 `listenHost` 必须保持回环 `127.0.0.1`（仅本机 frp 客户端 / 已完成认证的网关可达）。`backendHost`（DSH Web 后端）本身已被校验强制回环，不是风险点；真正的暴露向量是 `listenHost`——若配成局域网 IP（手机同 WiFi 直连场景），整个局域网都能无认证直达 DSH 后端。
+3. **控制路由隔离**：`/dsh-reverse-proxy/*` 仍限 loopback，防止远程通过公网隧道修改代理配置
+4. **审计日志**：建议保留审计日志，即使无令牌认证，仍可记录请求来源
+5. **CIDR 白名单**：可在 dsh-full-remote 和 Nginx 两端同时配置，增加纵深防御。注意：在 frp 部署下，代理的直连 peer 是 NAS 本机 frp 客户端（`127.0.0.1`），CIDR 白名单 / 审计 / 限速要看到真实客户端 IP，**三个条件必须同时成立**：(1) Nginx 侧保留 `X-Forwarded-For $proxy_add_x_forwarded_for`；(2) frp 将该头原样转发到 NAS；(3) dsh-full-remote 开启 `trustForwardedFor: true`。否则所有客户端都会落到回环 `127.0.0.1`（回环恒被允许），CIDR 白名单将**静默失效**。
+6. **TLS**：Nginx 端必须配置 TLS（已通过 ssl_certificate 确保），frp 隧道内流量建议加密
 
 ## 7. 向后兼容
 
