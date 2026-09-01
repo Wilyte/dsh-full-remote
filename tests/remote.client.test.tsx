@@ -586,3 +586,19 @@ describe('remote settings section', () => {
     expect(service.startTunnel).not.toHaveBeenCalled()
   })
 })
+
+describe('external auth mode badge', () => {
+  it('shows the external-auth notice when disableTokenAuth is on', async () => {
+    const service = api({
+      status: vi.fn().mockResolvedValue({ ...stopped, disableTokenAuth: true }),
+    })
+    render(<RemoteSection {...sectionProps(service)} />)
+    expect(await screen.findByText(/外部认证模式/)).toBeTruthy()
+  })
+
+  it('does not show the notice when disableTokenAuth is off', () => {
+    const service = api()
+    render(<RemoteSection {...sectionProps(service)} />)
+    expect(screen.queryByText(/外部认证模式/)).toBeNull()
+  })
+})

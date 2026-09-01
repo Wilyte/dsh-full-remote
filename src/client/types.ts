@@ -26,6 +26,8 @@ export type ProxyStatus = {
   tls?: boolean
   auditLog?: boolean
   trustForwardedFor?: boolean
+  /** True when the built-in token/session gate is bypassed (external auth). */
+  disableTokenAuth?: boolean
   reason?: string
   tunnel?: TunnelStatus
 }

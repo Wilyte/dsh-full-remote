@@ -145,6 +145,17 @@
   color: var(--dsw-alias-label-tertiary);
 }
 
+.externalAuthBadge {
+  margin-top: 8px;
+  padding: 6px 10px;
+  border: 1px solid var(--dsh-color-border, #d0d7de);
+  border-radius: 6px;
+  background: var(--dsh-color-bg-subtle, #f6f8fa);
+  color: var(--dsh-color-text-secondary, #57606a);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
 .listenRow {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 104px auto;

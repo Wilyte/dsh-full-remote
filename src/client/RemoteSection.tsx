@@ -476,6 +476,9 @@ export function RemoteSection({ api, t }: RemoteSectionProps) {
           <div className={css.heroCopy}>
             <strong>{heroTitle}</strong>
             <p className={css.hint}>{heroHint}</p>
+            {status?.disableTokenAuth === true && (
+              <p className={css.externalAuthBadge} role="status">{t('status.externalAuth')}</p>
+            )}
           </div>
         </div>
         <div className={css.heroActions}>
