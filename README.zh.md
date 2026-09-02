@@ -51,6 +51,7 @@ DeepSeek Harness 的 Web 服务只绑定回环地址，且仅当请求的 `Host`
 | 通用隧道（SSH 端口转发、Caddy、绑定 `0.0.0.0`） | 页面可加载；`settings.*` / `credentials.*` / `host.listDirectory` 返回 403 |
 | 仅限局域网的插件，无鉴权 | 局域网内可用，不适合公网暴露 |
 | 只有密码校验，不改写请求头 | 请求通过了鉴权，但特权接口仍然被拦截 |
+| 组织已有统一网关（Nginx + Authelia、SSO） | 网关已完成认证，但代理仍要求第二套令牌；或根本不想再维护一套凭据体系 |
 
 ## 解决方案
 
@@ -62,6 +63,8 @@ DeepSeek Harness 的 Web 服务只绑定回环地址，且仅当请求的 `Host`
 - 提供设置页（**设置 → 反向代理**），用于启停代理、修改监听地址、轮换令牌、管理设备会话。
 
 改写使 Harness 原本对远程客户端的信任校验失效，因此插件提供自己的访问控制层作为替代，见[安全模型](#安全模型)。
+
+**已经有统一网关？** 如果组织里已经跑了 Nginx + Authelia（或类似 SSO）边缘，把 `disableTokenAuth: true` 一开，代理就退化为纯转发/改写层：内置的令牌、设备会话、邀请门整体跳过，认证完全交给网关——不需要再维护第二套凭据体系。头部改写、头部清洗、CIDR 白名单、gzip、带 hash 资源缓存、健康检查、回环专属控制路由仍然全部生效；开启后面板会显示「外部认证模式」徽标。完整配置指南见 [Nginx + Authelia 外部认证](./docs/external-auth.zh.md)。
 
 插件可以一键启动临时 Cloudflare 快速隧道；也支持把受控的 cloudflared、ngrok、frp、SSH、Tailscale 等现有隧道指向插件发布的本地地址。
 
@@ -280,7 +283,7 @@ dsh plugin --profile web update --latest dsh-full-remote
 - `backendHost` 必须是回环地址，通配地址或非回环地址在加载时会被拒绝。
 - `disableTokenAuth: true` 会跳过内置的访问令牌 / 设备会话 / 邀请门：除 CIDR 与头部检查外，所有请求直接转发到后端。仅当外部反向代理（例如 Nginx + Authelia 的 `auth_request` 流程）已完成客户端认证时才应启用。启用后，代理的**监听地址 `listenHost` 必须保持回环 `127.0.0.1`**，且只能通过已完成认证的隧道 / 网关可达——若把 `listenHost` 配成局域网 IP（UI 引导的手机同 WiFi 直连场景），整个局域网都能无认证直达 DSH 后端。回环专属控制路由（`/dsh-reverse-proxy/*`）、健康检查、CIDR 白名单、头部清洗、gzip、缓存与审计日志仍然生效。
 
-Nginx + Authelia 在 frp 隧道前的部署参考见 [docs/nginx-authelia.md](./docs/nginx-authelia.md)。
+Nginx + Authelia 在 frp 隧道前的部署参考见 [docs/nginx-authelia.md](./docs/nginx-authelia.md)；完整配置指南——Nginx/Authelia 全套配置、frp 注意点、逐项配置说明与验证步骤——见 [docs/external-auth.zh.md](./docs/external-auth.zh.md)。
 
 ## 安全模型
 

@@ -64,6 +64,7 @@ loads, but the following methods return 403:
 | Generic tunnel (SSH port forward, Caddy, binding `0.0.0.0`) | Page loads; `settings.*` / `credentials.*` / `host.listDirectory` return 403 |
 | LAN-only plugin without authentication | Usable on the local network; not suitable for public exposure |
 | Password prompt without header rewriting | Requests are authenticated, but the privileged APIs remain blocked |
+| Organization already runs a unified gateway (Nginx + Authelia, SSO) | The gateway authenticates, but the proxy still demands a second token — or you don't want to maintain a second credential system at all |
 
 ## Solution
 
@@ -83,6 +84,17 @@ server. The proxy:
 Because the rewrite disables Harness's original trust check for remote
 clients, the plugin provides its own access-control layer in its place.
 This layer is described under [Security model](#security-model).
+
+**Already have a unified gateway?** If your organization already runs an
+Nginx + Authelia (or similar SSO) edge, set `disableTokenAuth: true` and the
+proxy becomes a pure forwarding/rewriting layer: the built-in token,
+device-session, and invite gate is skipped entirely, and authentication is
+delegated to the gateway — no second credential system to maintain. Header
+rewriting, header sanitization, CIDR allowlisting, gzip, hashed-asset
+caching, the health endpoint, and the loopback-only control routes all
+still apply. The settings panel shows an **external auth mode** badge when
+enabled. See [External authentication with Nginx + Authelia](./docs/external-auth.md)
+for the full configuration guide.
 
 The plugin can optionally start a temporary Cloudflare quick tunnel. Any
 managed tunnel (cloudflared, ngrok, frp, SSH, Tailscale) can also point at the
@@ -399,7 +411,9 @@ Two points to note:
   audit log still apply.
 
 A deployment reference for Nginx + Authelia in front of the frp tunnel is in
-[docs/nginx-authelia.md](./docs/nginx-authelia.md).
+[docs/nginx-authelia.md](./docs/nginx-authelia.md); a full configuration
+guide — complete Nginx/Authelia setup, frp notes, every option explained, and
+verification steps — is in [docs/external-auth.md](./docs/external-auth.md).
 
 ## Security model
 
