@@ -1,11 +1,11 @@
 # Compatibility and composition
 
 `dsh-full-remote` is a bundle, not a replacement web application. It expects
-the Harness `webServer` service and the published client runtime/UI-slots
-packages in the supported peer range (`0.1.0-rc.5` through `<0.2`). It is
-verified against DeepSeek Harness **0.1.1-rc.1** and **0.1.1-rc.2** (these
-are the npm dist-tags `latest` and `next`). It is not intended for a headless
-profile.
+the Harness `webServer` and Host `connection` services plus the published
+client runtime/UI-slots packages in the supported peer range (`0.1.1-rc.1`
+through `<0.2`). It is verified against DeepSeek Harness **0.1.2-rc.1** (the
+npm `next` dist-tag), with a compatibility path for **0.1.1-rc.1/rc.2**. It is
+not intended for a headless profile.
 
 ## Installation order
 
@@ -62,6 +62,17 @@ After composing plugins, verify all of the following through the proxy:
    `DeepSeek-V4-Flash-Vision-Exp`, and a paste/drop of a JPEG/PNG/WebP/GIF
    under the Harness image limits is not 413'd by this proxy.
 
+Harness 0.1.2 protects the Web index and `/api` with a browser-session cookie.
+When the Host Connection service exposes `authenticatedUrl()`, this plugin
+performs the local process-token exchange at proxy start and keeps that cookie
+internal; the remote device cookie is never forwarded upstream.
+
+Harness Desktop may start its embedded backend with `--skip-auth` and
+`DSH_SKIP_AUTH=1`. In that explicit mode the launch URL returns the index with
+a successful 2xx response and does not mint a browser-session cookie. The
+plugin accepts that cookie-free upstream only while the flag is exactly `1`;
+its own access-token and per-device session gate remains active.
+
 ## Multimodal / vision
 
 Harness 0.1.1-rc.1 adds `deepseek-v4-flash-vision-exp` to the official
@@ -80,10 +91,15 @@ forwards the Web `/api` the composer already uses:
 `session.prompt`) also the wait for the first upstream byte after the client
 finishes sending. A slow tunnel upload after connect is bounded by
 `requestTimeoutMs` (default 5 minutes), not by 15 seconds. GET/HEAD including
-SSE never use that post-body wait. Host command POSTs such as
-`/api/commands/execute` use `commandTimeoutMs` (default 5 minutes) instead of
-`upstreamTimeoutMs` for that first-byte wait because Harness command handlers
-may legitimately run long before responding (for example `/compact`).
+SSE never use that post-body wait. Host command POSTs use `commandTimeoutMs`
+(default 5 minutes) instead of `upstreamTimeoutMs` for that first-byte wait
+because Harness command handlers may legitimately run long before responding
+(for example `/compact`). That covers both wire generations: Harness 0.1.2
+calls commands on `POST /api/commands/execute`, while Harness 0.1.0/0.1.1
+carry the command line as an ordinary `POST /api/session.prompt` whose single
+text part starts with `/` — the proxy sniffs that bounded prompt body and
+applies the command window only to command-shaped prompts, so ordinary
+prompts keep the short hung-backend window.
 
 Raster image responses (`image/png`, `image/jpeg`, `image/webp`,
 `image/gif`) are never gzipped. JSON RPC envelopes still may be.

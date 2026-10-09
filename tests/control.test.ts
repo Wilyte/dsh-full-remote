@@ -1,6 +1,6 @@
 import { afterEach, describe, it } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
+import { mkdtemp, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createRuntime } from '../src/index.ts'
@@ -302,6 +302,50 @@ describe('runtime control surface', () => {
     assert.equal(stopped.enabled, false)
   })
 
+  it('starts without an upstream cookie only when Harness explicitly disables auth', async () => {
+    const backend = createHttpServer((_req, res) => {
+      res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' })
+      res.end('<!doctype html>')
+    })
+    await new Promise<void>((resolve, reject) => {
+      backend.once('error', reject)
+      backend.listen(0, '127.0.0.1', resolve)
+    })
+    cleanups.push(() => new Promise<void>(resolve => backend.close(() => resolve())))
+    const address = backend.address()
+    if (address === null || typeof address === 'string') throw new Error('expected a TCP bind')
+    const dir = await mkdtemp(join(tmpdir(), 'dsh-reverse-proxy-skip-auth-'))
+    cleanups.push(() => rm(dir, { recursive: true, force: true }))
+    const ctx = {
+      ...makeContext(),
+      get(name: string) {
+        return name === 'connection'
+          ? { authenticatedUrl: (base: string) => `${base}/?token=launch-token` }
+          : undefined
+      },
+    }
+
+    const previous = process.env.DSH_SKIP_AUTH
+    delete process.env.DSH_SKIP_AUTH
+    try {
+      const guarded = createRuntime(ctx, makeConfig(join(dir, 'guarded.json'), { backendPort: address.port }))
+      cleanups.push(() => guarded.dispose())
+      const refused = await guarded.start()
+      assert.equal(refused.running, false)
+      assert.equal(refused.reason, 'backend-auth-failed')
+
+      process.env.DSH_SKIP_AUTH = '1'
+      const embedded = createRuntime(ctx, makeConfig(join(dir, 'embedded.json'), { backendPort: address.port }))
+      cleanups.push(() => embedded.dispose())
+      const started = await embedded.start()
+      assert.equal(started.running, true)
+      assert.equal(started.reason, undefined)
+    } finally {
+      if (previous === undefined) delete process.env.DSH_SKIP_AUTH
+      else process.env.DSH_SKIP_AUTH = previous
+    }
+  })
+
   it('persists runtime listen overrides with 0600 permissions', async () => {
     const { runtime, stateFile } = await makeRuntime()
     const updated = await runtime.setListen('0.0.0.0', 0)
@@ -351,6 +395,37 @@ describe('runtime control surface', () => {
     assert.notEqual(body.accessToken, before)
     assert.equal(body.running, true)
     assert.equal(await runtime.token(), body.accessToken)
+  })
+
+  it('rolls back a rotation whose state write fails and explains why the entry went dark', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'dsh-reverse-proxy-rotate-fail-'))
+    cleanups.push(() => rm(dir, { recursive: true, force: true }))
+    const stateFile = join(dir, 'state.json')
+    const now = Date.now()
+    await writeState(stateFile, {
+      enabled: false,
+      accessToken: 'A'.repeat(32),
+      sessions: [{ id: 'device1', secretHash: 'hash', label: 'Phone', status: 'active', createdAt: now, lastSeenAt: now }],
+    })
+    const runtime = createRuntime(makeContext(), makeConfig(stateFile))
+    cleanups.push(() => runtime.dispose())
+    assert.equal((await runtime.start()).running, true)
+    const before = await runtime.token()
+    // Break future writes: rename(2) cannot replace a path that became a
+    // directory, and this fails on every platform without chmod tricks.
+    await rm(stateFile)
+    await mkdir(stateFile)
+    await assert.rejects(() => runtime.rotateToken(), /durable state write failed/)
+    const status = await runtime.status()
+    // The listener is already down; the status must say WHY instead of
+    // showing a silent stop.
+    assert.equal(status.reason, 'rotate-save-failed')
+    assert.equal(status.running, false)
+    // In-memory rollback: old token and the pre-existing device survive.
+    assert.equal(await runtime.token(), before)
+    const listed = await call(runtime, { path: '/dsh-reverse-proxy/sessions', method: 'GET', headers: CONTROL })
+    const sessions = (listed.body as { sessions: Array<{ id: string }> }).sessions
+    assert.equal(sessions.some(session => session.id === 'device1'), true)
   })
 
   it('does not hydrate sessions when a short access token forces regeneration', async () => {
@@ -785,5 +860,64 @@ describe('one-click tunnel control', () => {
     assert.equal(started.status, 200)
     await runtime.rotateToken()
     assert.deepEqual(calls, ['start', 'stop', 'start'])
+  })
+})
+
+describe('runtime self-check', () => {
+  it('probes the fence through the runtime and the control route against a live backend', async () => {
+    const backend = createHttpServer((_req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' })
+      res.end('{}')
+    })
+    await new Promise<void>((resolve, reject) => {
+      backend.once('error', reject)
+      backend.listen(0, '127.0.0.1', resolve)
+    })
+    cleanups.push(() => new Promise<void>(resolve => backend.close(() => resolve())))
+    const address = backend.address()
+    if (address === null || typeof address === 'string') throw new Error('expected a TCP bind')
+    const dir = await mkdtemp(join(tmpdir(), 'dsh-reverse-proxy-selfcheck-'))
+    cleanups.push(() => rm(dir, { recursive: true, force: true }))
+    const runtime = createRuntime(makeContext(), makeConfig(join(dir, 'state.json'), { backendPort: address.port }))
+    cleanups.push(() => runtime.dispose())
+
+    const direct = await runtime.selfCheck()
+    assert.equal(direct.running, false)
+    assert.equal(direct.fence.ok, true)
+    assert.equal(direct.fence.status, 200)
+    assert.equal(direct.fence.rewriteAuthority.startsWith('127.0.0.1:'), true)
+    assert.equal(direct.tls, false)
+    assert.equal(direct.auditLog, false)
+    assert.equal(direct.allowTokenRead, false)
+
+    const routed = await call(runtime, { path: '/dsh-reverse-proxy/self-check', method: 'POST', headers: CONTROL })
+    assert.equal(routed.status, 200)
+    const body = routed.body as { running: boolean, fence: { ok: boolean, status: number, method: string, rewriteAuthority: string } }
+    assert.equal(body.running, false)
+    assert.equal(body.fence.ok, true)
+    assert.equal(body.fence.status, 200)
+    assert.equal(body.fence.method, 'settings.describe')
+  })
+
+  it('reports the channel closed when the backend resets the probe connection', async () => {
+    // A TCP sink that destroys every connection yields a deterministic
+    // ECONNRESET — no port-reuse races, no timeouts.
+    const sink = createServer(socket => { socket.destroy() })
+    await new Promise<void>((resolve, reject) => {
+      sink.once('error', reject)
+      sink.listen(0, '127.0.0.1', resolve)
+    })
+    cleanups.push(() => new Promise<void>(resolve => sink.close(() => resolve())))
+    const address = sink.address()
+    if (address === null || typeof address === 'string') throw new Error('expected a TCP bind')
+    const dir = await mkdtemp(join(tmpdir(), 'dsh-reverse-proxy-selfcheck-refused-'))
+    cleanups.push(() => rm(dir, { recursive: true, force: true }))
+    const runtime = createRuntime(makeContext(), makeConfig(join(dir, 'state.json'), { backendPort: address.port }))
+    cleanups.push(() => runtime.dispose())
+
+    const result = await runtime.selfCheck()
+    assert.equal(result.fence.ok, false)
+    assert.equal(result.fence.status, 0)
+    assert.notEqual(result.fence.detail, undefined)
   })
 })

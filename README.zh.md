@@ -1,7 +1,7 @@
 # dsh-full-remote
 
 [![Awesome dsh-plugin](https://awesome.re/badge.svg)](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin)
-[![npm](https://img.shields.io/npm/v/dsh-full-remote?style=flat-square)](https://www.npmjs.com/package/dsh-full-remote)
+[![GitHub Release](https://img.shields.io/github/v/release/JUANWANG-BUAA/dsh-full-remote?style=flat-square)](https://github.com/JUANWANG-BUAA/dsh-full-remote/releases/latest)
 [![CI](https://github.com/JUANWANG-BUAA/dsh-full-remote/actions/workflows/ci.yml/badge.svg)](https://github.com/JUANWANG-BUAA/dsh-full-remote/actions)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg?style=flat-square)](./LICENSE)
 [![GitHub Repo stars](https://img.shields.io/github/stars/JUANWANG-BUAA/dsh-full-remote?style=flat-square)](https://github.com/JUANWANG-BUAA/dsh-full-remote/stargazers)
@@ -12,6 +12,8 @@
 
 **已收录进 [awesome-dsh-plugin](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin)** · DeepSeek Harness 插件
 
+**当前版本：[v0.3.12](https://github.com/JUANWANG-BUAA/dsh-full-remote/releases/tag/v0.3.12)** · 通过 GitHub Releases 分发
+
 [English](./README.md) | **中文**
 
 `dsh-full-remote` 是 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 的一个插件：它在 Harness Web 服务前放置一层带鉴权的反向代理，使 Web 界面可以通过公网隧道或局域网设备访问，同时保持设置、凭据、目录浏览等特权接口可用。
@@ -19,7 +21,8 @@
 ## 60 秒快速开始
 
 ```sh
-dsh plugin --profile web add dsh-full-remote
+curl -fLO https://github.com/JUANWANG-BUAA/dsh-full-remote/releases/download/v0.3.12/dsh-full-remote-0.3.12.tgz
+dsh plugin --profile web add ./dsh-full-remote-0.3.12.tgz
 dsh --profile web
 ```
 
@@ -143,14 +146,20 @@ flowchart LR
 ## 环境要求
 
 - Node.js `^22.19.0 || >=24`
-- DeepSeek Harness 的 **web** profile。插件依赖 `webServer`，不适用于 headless profile。已在 **0.1.1-rc.1** 验证（npm dist-tag `latest` / `next`）。
+- DeepSeek Harness 的 **web** profile。插件依赖 `webServer` 与 Host Connection 服务，不适用于 headless profile。已在 **0.1.2-rc.1** 验证（npm dist-tag `next`），并保留对 **0.1.1-rc.1/rc.2** 的兼容路径。
 
 ## 安装
 
 ```sh
-dsh plugin --profile web add dsh-full-remote
+curl -fLO https://github.com/JUANWANG-BUAA/dsh-full-remote/releases/download/v0.3.12/dsh-full-remote-0.3.12.tgz
+curl -fLO https://github.com/JUANWANG-BUAA/dsh-full-remote/releases/download/v0.3.12/SHA256SUMS
+shasum -a 256 -c SHA256SUMS
+dsh plugin --profile web add ./dsh-full-remote-0.3.12.tgz
 dsh --profile web
 ```
+
+当前版本为 **v0.3.12**。npm 发布与 GitHub Release 相互独立，目前 registry
+版本落后；安装或升级本版本时请使用上面的 GitHub 附件。
 
 1. 打开 `http://127.0.0.1:3080`。
 2. 打开 **设置 → 反向代理**（左侧导航最后一项）。
@@ -168,6 +177,10 @@ ngrok http 3081
 本包原名 `dsh-reverse-proxy`，现已改名为 `dsh-full-remote`。
 
 ## 使用
+
+### 界面语言
+
+插件面板提供 **Language / 语言** 选择器：**自动**、**English**、**中文**。自动模式优先跟随 Harness 语言，语言服务不可用时跟随浏览器（非中文浏览器使用英文）。手动选择按浏览器和访问地址保存，并同步应用于远程确认弹层。登录页、等待审批页与设备主页仍跟随浏览器的 HTTP 语言头。
 
 ### 启动与停止
 
@@ -197,17 +210,19 @@ ngrok http 3081
 
 ### 升级
 
-`dsh plugin` 只是把参数转给 pnpm。若当初用 `add dsh-full-remote@0.2.4` 这类精确版本安装，裸 `update dsh-full-remote` 会显示 Already up to date，实际停在旧版。要无痛升到 npm 最新版：
+下载当前 GitHub Release，并把 tarball 添加到现有 web profile：
 
 ```sh
-dsh plugin --profile web update --latest dsh-full-remote
+curl -fLO https://github.com/JUANWANG-BUAA/dsh-full-remote/releases/download/v0.3.12/dsh-full-remote-0.3.12.tgz
+dsh plugin --profile web add ./dsh-full-remote-0.3.12.tgz
 ```
 
-然后重启 `dsh web`。`--latest` 会忽略现有版本范围，装上最新版并改写 `package.json`。指定某一版用 `dsh plugin --profile web update dsh-full-remote@0.3.7`。
+然后重启 `dsh web`。这会把 registry 或旧 tarball 安装的版本替换为
+**v0.3.12**。
 
 ## 截图
 
-截图画廊保留在 GitHub 仓库中；npm 包只携带运行所需文件并链接回这里，
+截图画廊保留在 GitHub 仓库中；发布包只携带运行所需文件并链接回这里，
 因此安装包更小。
 
 ### 桌面端
@@ -261,7 +276,7 @@ dsh plugin --profile web update --latest dsh-full-remote
     headersTimeoutMs: 15000      # 请求头超时
     requestTimeoutMs: 300000     # 完整请求超时（含 body）；覆盖远程视觉上传
     upstreamTimeoutMs: 15000     # TCP 连接 + POST body 结束后等首字节；SSE GET 不用这项
-    commandTimeoutMs: 300000     # /api/commands/execute 的首字节等待；/compact 可能长时间不响应
+    commandTimeoutMs: 300000     # 主机命令（/compact 等）的首字节等待；覆盖 /api/commands/execute 与以 "/" 开头的 session.prompt
     maxRequestBytes: 167772160   # 160 MiB，与 Harness /api 图像信封一致
     sessionIdleSeconds: 0        # 0 = 关闭；否则按空闲秒数过期
     auditLog: true
@@ -298,6 +313,12 @@ Host/Origin 改写恢复了特权接口，同时也使 Harness 对远程客户�
 
 访问令牌须按机密保管。公网侧应终止 TLS。局域网直连可配置 `tlsCertFile` / `tlsKeyFile`（例如用 [mkcert](https://github.com/FiloSottile/mkcert) 生成）。
 
+**公网暴露清单。** 任何持有访问令牌的人都等于掌握了整台 Harness（包括凭据与设置）。凡是能被公网访问到的入口：
+
+- 请开启 `approvalMode: true`：新设备将保持待审批状态，直到你在本机控制面批准（快速隧道在线且未开审批时，面板会显示警告）；
+- 建议配合 `allowedCidrs` 把入口限定到已知网络；
+- 保持 `auditLog: true`（默认开启），并在分享出去的邀请失去用途后及时轮换令牌。
+
 ## 局限
 
 - 控制操作（启动、停止、查看令牌、修改监听地址）仅可在本机 Harness 窗口执行，隧道地址下无效。
@@ -314,7 +335,7 @@ Host/Origin 改写恢复了特权接口，同时也使 Harness 对远程客户�
 
 ```sh
 pnpm pack
-dsh plugin --profile web add ./dsh-full-remote-0.3.7.tgz
+dsh plugin --profile web add ./dsh-full-remote-0.3.12.tgz
 ```
 
 git 安装会执行 `prepare` 构建，pnpm ≥ 10 需要放行：

@@ -1,3 +1,5 @@
+import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client'
+import { LANGUAGE_STORAGE_KEY } from '../src/client/language.ts'
 import type { ComponentProps } from 'react'
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -8,8 +10,8 @@ import {
   trustSettingsPersistence,
 } from '../src/client/trust-settings.ts'
 import type { ProxyApi, ProxyStatus } from '../src/client/types.ts'
-import { translatorFor, zh, en, type ReverseProxyTranslate } from '../src/client/i18n.ts'
-import { toastFromCaught, toastFromStatus, toastFromTunnelDetail } from '../src/client/toast.ts'
+import { bindTranslate, translatorFor, zh, en, type ReverseProxyTranslate } from '../src/client/i18n.ts'
+import { toastFromCaught, toastFromReason, toastFromStatus, toastFromTunnelDetail } from '../src/client/toast.ts'
 
 afterEach(cleanup)
 
@@ -507,6 +509,40 @@ describe('remote settings section', () => {
     })
   })
 
+  it('warns about a public tunnel while approval mode is off', async () => {
+    const onlineNoApproval: ProxyStatus = {
+      ...stopped,
+      enabled: true,
+      running: true,
+      approvalMode: false,
+      tunnel: { state: 'online', publicUrl: 'https://abc123.trycloudflare.com' },
+    }
+    const service = api({ status: vi.fn().mockResolvedValue(onlineNoApproval) })
+    render(<RemoteSection {...sectionProps(service)} />)
+    expect(await screen.findByText(/公网可达/)).toBeTruthy()
+    expect(screen.getByText(/approvalMode/)).toBeTruthy()
+  })
+
+  it('does not warn about a public tunnel when approval mode is on', async () => {
+    const onlineApproval: ProxyStatus = {
+      ...stopped,
+      enabled: true,
+      running: true,
+      approvalMode: true,
+      tunnel: { state: 'online', publicUrl: 'https://abc123.trycloudflare.com' },
+    }
+    const service = api({ status: vi.fn().mockResolvedValue(onlineApproval) })
+    render(<RemoteSection {...sectionProps(service)} />)
+    expect(await screen.findByText('https://abc123.trycloudflare.com')).toBeTruthy()
+    expect(screen.queryByText(/公网可达/)).toBeNull()
+  })
+
+  it('surfaces a rotate-save failure with its dedicated copy', () => {
+    const toast = toastFromReason('rotate-save-failed', stopped, translatorFor(zh), 'rotate')
+    expect(toast.kind).toBe('error')
+    expect(toast.text).toContain('状态文件写入失败')
+  })
+
   it('surfaces a tunnel error token observed by polling', async () => {
     const statuses: ProxyStatus[] = [
       { ...stopped, enabled: true, running: true, tunnel: { state: 'starting', detail: 'connecting' } },
@@ -600,5 +636,81 @@ describe('external auth mode badge', () => {
     const service = api()
     render(<RemoteSection {...sectionProps(service)} />)
     expect(screen.queryByText(/外部认证模式/)).toBeNull()
+  })
+})
+
+describe('browser language preference (#30)', () => {
+  const bindings: ReturnType<typeof bindTranslate>[] = []
+  function bind(locale?: unknown) {
+    const result = bindTranslate({ get: () => locale } as unknown as ClientContext)
+    bindings.push(result)
+    return result
+  }
+  afterEach(() => {
+    for (const binding of bindings.splice(0)) binding.dispose()
+    localStorage.clear()
+    vi.restoreAllMocks()
+  })
+
+  it('uses the browser language when the host locale service is absent', () => {
+    vi.spyOn(navigator, 'languages', 'get').mockReturnValue(['en-US', 'zh-CN'])
+    const { t } = bind()
+    expect(t('section.title')).toBe('Reverse proxy')
+    vi.spyOn(navigator, 'languages', 'get').mockReturnValue(['zh-TW', 'en'])
+    expect(t('section.title')).toBe('反向代理')
+    vi.spyOn(navigator, 'languages', 'get').mockReturnValue(['fr-FR'])
+    expect(t('section.title')).toBe('Reverse proxy')
+  })
+
+  it('overrides the host language, persists, and restores Auto', () => {
+    const unregister = vi.fn()
+    const locale = { register: vi.fn(() => unregister), bind: () => translatorFor(zh) }
+    const { t, language, dispose } = bind(locale)
+    expect(t('start')).toBe('启动代理')
+    language.setPreference('en')
+    expect(t('start')).toBe('Start proxy')
+    expect(bind(locale).t('start')).toBe('Start proxy')
+    language.setPreference('auto')
+    expect(localStorage.getItem(LANGUAGE_STORAGE_KEY)).toBeNull()
+    expect(t('start')).toBe('启动代理')
+    dispose()
+    expect(unregister).toHaveBeenCalledOnce()
+  })
+
+  it('updates the panel without losing a draft or restarting status polling', async () => {
+    const { t, language } = bind({ register: () => () => {}, bind: () => translatorFor(zh) })
+    const service = api()
+    render(<RemoteSection {...sectionProps(service, t)} language={language} />)
+    await screen.findByText('代理尚未运行')
+    const host = screen.getByDisplayValue('127.0.0.1')
+    fireEvent.change(host, { target: { value: '192.168.1.42' } })
+    fireEvent.change(screen.getByRole('combobox', { name: /Language/ }), { target: { value: 'en' } })
+    expect(screen.getByRole('heading', { name: 'Reverse proxy' })).toBeTruthy()
+    expect(screen.getByDisplayValue('192.168.1.42')).toBeTruthy()
+    expect(service.status).toHaveBeenCalledOnce()
+    expect(localStorage.getItem(LANGUAGE_STORAGE_KEY)).toBe('en')
+  })
+
+  it('syncs other tabs and ignores invalid saved preferences', () => {
+    localStorage.setItem(LANGUAGE_STORAGE_KEY, 'invalid')
+    const { language, t } = bind()
+    expect(language.getPreference()).toBe('auto')
+    const listener = vi.fn()
+    const unsubscribe = language.subscribe(listener)
+    window.dispatchEvent(new StorageEvent('storage', { key: LANGUAGE_STORAGE_KEY, newValue: 'zh' }))
+    expect(t('start')).toBe('启动代理')
+    expect(listener).toHaveBeenCalledOnce()
+    unsubscribe()
+    window.dispatchEvent(new StorageEvent('storage', { key: null }))
+    expect(language.getPreference()).toBe('auto')
+    expect(listener).toHaveBeenCalledOnce()
+  })
+
+  it('works when browser storage is blocked', () => {
+    vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => { throw new Error('blocked') })
+    vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new Error('blocked') })
+    const { t, language } = bind()
+    language.setPreference('en')
+    expect(t('start')).toBe('Start proxy')
   })
 })

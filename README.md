@@ -1,7 +1,7 @@
 # dsh-full-remote
 
 [![Awesome dsh-plugin](https://awesome.re/badge.svg)](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin)
-[![npm](https://img.shields.io/npm/v/dsh-full-remote?style=flat-square)](https://www.npmjs.com/package/dsh-full-remote)
+[![GitHub Release](https://img.shields.io/github/v/release/JUANWANG-BUAA/dsh-full-remote?style=flat-square)](https://github.com/JUANWANG-BUAA/dsh-full-remote/releases/latest)
 [![CI](https://github.com/JUANWANG-BUAA/dsh-full-remote/actions/workflows/ci.yml/badge.svg)](https://github.com/JUANWANG-BUAA/dsh-full-remote/actions)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg?style=flat-square)](./LICENSE)
 [![GitHub Repo stars](https://img.shields.io/github/stars/JUANWANG-BUAA/dsh-full-remote?style=flat-square)](https://github.com/JUANWANG-BUAA/dsh-full-remote/stargazers)
@@ -11,6 +11,8 @@
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg?style=flat-square)](https://github.com/JUANWANG-BUAA/dsh-full-remote/pulls)
 
 **Listed in [awesome-dsh-plugin](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin)** · DeepSeek Harness plugin
+
+**Current release: [v0.3.12](https://github.com/JUANWANG-BUAA/dsh-full-remote/releases/tag/v0.3.12)** · Distributed through GitHub Releases
 
 **English** | [中文](./README.zh.md)
 
@@ -24,7 +26,8 @@ directory browsing remain available.
 ## 60-second quick start
 
 ```sh
-dsh plugin --profile web add dsh-full-remote
+curl -fLO https://github.com/JUANWANG-BUAA/dsh-full-remote/releases/download/v0.3.12/dsh-full-remote-0.3.12.tgz
+dsh plugin --profile web add ./dsh-full-remote-0.3.12.tgz
 dsh --profile web
 ```
 
@@ -224,16 +227,24 @@ flowchart LR
 ## Requirements
 
 - Node.js `^22.19.0 || >=24`
-- A DeepSeek Harness **web** profile. The plugin depends on `webServer`
-  and is not intended for headless profiles. Verified against
-  **0.1.1-rc.1** (npm dist-tags `latest` and `next`).
+- A DeepSeek Harness **web** profile. The plugin depends on `webServer` and
+  Host `connection` services and is not intended for headless profiles.
+  Verified against **0.1.2-rc.1** (npm `next` dist-tag), with a compatibility
+  path for **0.1.1-rc.1/rc.2**.
 
 ## Installation
 
 ```sh
-dsh plugin --profile web add dsh-full-remote
+curl -fLO https://github.com/JUANWANG-BUAA/dsh-full-remote/releases/download/v0.3.12/dsh-full-remote-0.3.12.tgz
+curl -fLO https://github.com/JUANWANG-BUAA/dsh-full-remote/releases/download/v0.3.12/SHA256SUMS
+shasum -a 256 -c SHA256SUMS
+dsh plugin --profile web add ./dsh-full-remote-0.3.12.tgz
 dsh --profile web
 ```
+
+The current release is **v0.3.12**. npm publication is separate and currently
+lags behind the GitHub release, so use the attached tarball above when
+installing or upgrading this version.
 
 1. Open `http://127.0.0.1:3080`.
 2. Open **Settings → Reverse proxy** (last entry in the left navigation).
@@ -296,22 +307,24 @@ is running.
 
 ### Upgrade
 
-`dsh plugin` forwards to pnpm. If you installed with an exact pin such as
-`add dsh-full-remote@0.2.4`, a bare `update dsh-full-remote` reports
-Already up to date and stays on the old version. To jump to the latest npm
-release:
+Download the current GitHub release and add its tarball to the existing web
+profile:
 
 ```sh
-dsh plugin --profile web update --latest dsh-full-remote
+curl -fLO https://github.com/JUANWANG-BUAA/dsh-full-remote/releases/download/v0.3.12/dsh-full-remote-0.3.12.tgz
+dsh plugin --profile web add ./dsh-full-remote-0.3.12.tgz
 ```
 
-Then restart `dsh web`. `--latest` ignores the current range, installs the
-newest version, and rewrites `package.json`. For a specific version use
-`dsh plugin --profile web update dsh-full-remote@0.3.7`.
+Then restart `dsh web`. This replaces an older registry-installed or tarball
+version with **v0.3.12**.
+
+### Language
+
+The plugin panel has a **Language / 语言** selector: **Auto**, **English**, or **中文**. Auto follows the Harness locale when available, otherwise your browser language (English for non-Chinese browsers). An explicit choice is saved per browser and origin and also applies to remote confirmation overlays. Login, approval-wait, and device-home pages continue to follow the browser’s HTTP language header.
 
 ## Screenshots
 
-The gallery is hosted in the repository; the npm package keeps only runtime
+The gallery is hosted in the repository; the release package keeps only runtime
 files and links back here so installation stays small.
 
 ### Desktop
@@ -371,7 +384,7 @@ Common options:
     headersTimeoutMs: 15000      # timeout for request headers
     requestTimeoutMs: 300000     # timeout for the complete request (headers + body); covers remote vision uploads
     upstreamTimeoutMs: 15000     # TCP connect + first POST byte after the body; not applied to SSE GET
-    commandTimeoutMs: 300000     # first POST byte for /api/commands/execute; /compact may run long before responding
+    commandTimeoutMs: 300000     # first POST byte for host commands (/compact): /api/commands/execute, or a session.prompt whose single text part starts with "/"
     maxRequestBytes: 167772160   # 160 MiB; matches the Harness /api image envelope
     sessionIdleSeconds: 0        # 0: off; otherwise idle timeout in seconds
     auditLog: true
@@ -445,6 +458,17 @@ side of the tunnel. For LAN use without a tunnel, set
 `tlsCertFile` / `tlsKeyFile` (for example with
 [mkcert](https://github.com/FiloSottile/mkcert)).
 
+**Public exposure checklist.** Whoever holds the token controls the whole
+Harness — credentials and settings included — so for anything reachable
+from the internet:
+
+- enable `approvalMode: true`, so a new device stays pending until you
+  approve it in the local panel (the panel shows a warning whenever the
+  quick tunnel is online with approval off);
+- consider `allowedCidrs` to pin the entry to known networks;
+- keep `auditLog: true` (the default) and rotate the token after invites
+  outlive their need.
+
 ## Limitations
 
 - Control actions (start, stop, reveal token, change listen address) can
@@ -486,7 +510,7 @@ side of the tunnel. For LAN use without a tunnel, set
 
 ```sh
 pnpm pack
-dsh plugin --profile web add ./dsh-full-remote-0.3.7.tgz
+dsh plugin --profile web add ./dsh-full-remote-0.3.12.tgz
 ```
 
 Git installs run the `prepare` build. On pnpm ≥ 10 allow it:

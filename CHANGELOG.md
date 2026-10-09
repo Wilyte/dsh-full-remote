@@ -3,6 +3,113 @@
 All notable changes to dsh-full-remote (formerly dsh-reverse-proxy) are
 documented in this file.
 
+## 0.3.12 (2026-09-16)
+
+### Fixed
+
+- The proxy now starts when DeepSeek Harness Desktop runs its embedded Web
+  backend with `--skip-auth` / `DSH_SKIP_AUTH=1` (#31). In this explicit mode
+  Harness returns the launch URL as a successful index response without
+  minting a browser-session cookie; the plugin no longer misreports that as
+  `backend-auth-failed`. Its own access-token and per-device session gate is
+  unchanged.
+
+### Added
+
+- Regression coverage proves that a cookie-free 2xx launch response is
+  accepted only when backend authentication is explicitly disabled; the same
+  response still fails closed in normal authenticated mode.
+
+## 0.3.11 (2026-09-09)
+
+### Fixed
+
+- Restore English in the plugin settings when the optional Harness locale
+  service is absent (#30). The fallback now follows the browser language
+  instead of always using Chinese; non-Chinese languages fall back to English.
+
+- Weekly upstream canary now checks out the actual Harness default branch
+  instead of hard-coding `main` (upstream uses `master`).
+
+### Added
+
+- An Auto / English / 中文 language selector in the settings panel. Explicit
+  choices override the host locale, persist per browser/origin, and synchronize
+  across tabs and remote confirmation overlays without resetting form drafts
+  or restarting control polling. Blocked browser storage remains usable.
+- Regression coverage for browser and host locale selection, persistence,
+  cross-tab updates, blocked storage, and live panel switching, plus a Chromium
+  switch-and-reload smoke check.
+
+## 0.3.10 (2026-09-06)
+
+### Fixed
+
+- Manual `/compact` and other host commands no longer 502 through the proxy
+  on DeepSeek Harness 0.1.0/0.1.1 (#25). Those releases have no dedicated
+  command route: the composer sends the command line as an ordinary
+  `POST /api/session.prompt` whose single text part starts with `/`, and the
+  backend answers only after the command handler settles — so the request
+  hit the default 15s first-byte window and the proxy reported `502 bad
+  gateway` while direct `127.0.0.1` access worked. The proxy now sniffs the
+  bounded prompt body and applies `commandTimeoutMs` (default 5 minutes) to
+  command-shaped prompts on both wire generations
+  (`/api/session.prompt` and `/api/session/prompt`); ordinary prompts keep
+  the short hung-backend window, and the `/api/commands/execute` path
+  (Harness 0.1.2) is unchanged.
+
+## 0.3.9 (2026-08-27)
+
+Findings from a full plugin audit, addressed.
+
+### Fixed
+
+- Remote Web access now works with DeepSeek Harness 0.1.2's browser-session
+  authentication. At proxy start, the plugin exchanges the Harness process
+  launch token through the local `connection.authenticatedUrl()` surface and
+  forwards the resulting internal cookie on HTTP, SSE, and WebSocket traffic;
+  the public device-session gate remains unchanged.
+
+- Token rotation that fails to persist the new state no longer leaves a
+  silent stop: the old token and device list are rolled back in memory and
+  the status now reports the dedicated `rotate-save-failed` reason. The
+  control panel maps it to an actionable message (the durable-state fence
+  refuses an automatic restart while the state file is unwritable).
+- Oversized request bodies now answer with their error response instead of
+  a bare connection reset: the proxy drains the remainder of an oversized
+  chunked upload before tearing down, so remote clients receive the `413`;
+  the login/JSON body reader discards overflow the same way so its
+  400 still reaches the client.
+- Plugin shutdown flushes the audit queue, so events recorded during
+  teardown (tunnel.stop, …) can no longer be lost when the process exits.
+
+### Changed
+
+- Verified against DeepSeek Harness **0.1.2-rc.1**
+  (`a66e4702047846cdaa10c66c9d3df3951f5ea70d`). The 0.1.1 compatibility path
+  remains available when the older Connection service has no browser-auth
+  exchange method.
+
+- The settings panel shows a persistent warning while the quick tunnel is
+  online and approval mode is off: quick tunnels are publicly reachable,
+  and any new device holding the token gets in unless `approvalMode` is
+  enabled. Both READMEs gained a public-exposure checklist.
+- Self-check copy now states what it actually verifies — that the plugin
+  opened the local-privilege channel for remote browsers — instead of
+  implying "fence OK means safe".
+- Tunnel asset lookup goes through an injectable table (`assets` option),
+  defaulting to the pinned releases; useful for tests and private mirrors.
+
+### Added
+
+- Regression tests: readable 413 on oversized chunked uploads, rollback +
+  reason visibility for failed rotations, audit `flush()` ordering,
+  cloudflared download failure modes (non-200 / network / abort /
+  oversized content-length) plus the first successful install writing a
+  verified binary and digest sidecar, runtime + route self-check against a
+  live and a refusing backend, QR boundary payloads, and approval-mode
+  warning rendering in both locales.
+
 ## 0.3.8 (2026-08-24)
 
 ### Fixed

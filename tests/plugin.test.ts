@@ -11,7 +11,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { injectIndexEnhancements, injectViewport } from '../src/index.ts'
 import { readState, readStateDetailed, writeState } from '../src/persist.ts'
-import { effectiveRemoteAddress, forwardHeaders, listenProxy, sanitizeResponseHeaders, sanitizeUpgradeResponseHeaders } from '../src/proxy.ts'
+import { bootstrapUpstreamCookie, effectiveRemoteAddress, forwardHeaders, listenProxy, sanitizeResponseHeaders, sanitizeUpgradeResponseHeaders } from '../src/proxy.ts'
 import { formatAuthority, formatHttpUrl, isLoopbackHost, isSelfLoop, isWildcardHost, publishHost, rewriteLoopbackAuthority } from '../src/http-util.ts'
 import { generateAccessToken, safeEqual } from '../src/security.ts'
 import { createInviteStore } from '../src/invites.ts'
@@ -481,6 +481,63 @@ describe('header forwarding', () => {
     assert.equal(headers['x-safe'], 'ok')
   })
 
+  it('replaces the public session cookie with the internal Harness browser cookie', () => {
+    const headers = forwardHeaders({
+      headers: { host: 'public.example', cookie: 'dsh_reverse_proxy_session=public' },
+      socket: { remoteAddress: '127.0.0.1' },
+    } as unknown as IncomingMessage, '127.0.0.1:3080', { upstreamCookie: 'dsh-auth-test=internal' })
+    assert.equal(headers.cookie, 'dsh-auth-test=internal')
+  })
+
+  it('exchanges the Harness process token for an upstream browser cookie', async () => {
+    let malformed = false
+    const backend = createServer((req, res) => {
+      if (req.headers.host !== `127.0.0.1:${String(portOf(backend))}`
+        || !/[?&]token=launch-token(?:&|$)/.test(req.url ?? '')) {
+        malformed = true
+      }
+      res.writeHead(303, {
+        location: '/',
+        'set-cookie': ['dsh-auth-test=internal; Path=/; HttpOnly'],
+      })
+      res.end()
+    })
+    await new Promise<void>((resolve, reject) => {
+      backend.once('error', reject)
+      backend.listen(0, '127.0.0.1', resolve)
+    })
+    cleanups.push(() => new Promise<void>(resolve => backend.close(() => resolve())))
+    const cookie = await bootstrapUpstreamCookie({
+      backendHost: '127.0.0.1',
+      backendPort: portOf(backend),
+      auth: { authenticatedUrl: base => `${base}/?token=launch-token` },
+    })
+    assert.equal(cookie, 'dsh-auth-test=internal')
+    assert.equal(malformed, false)
+  })
+
+  it('accepts a successful cookie-free launch response only when backend auth is explicitly disabled', async () => {
+    const backend = createServer((_req, res) => {
+      res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' })
+      res.end('<!doctype html>')
+    })
+    await new Promise<void>((resolve, reject) => {
+      backend.once('error', reject)
+      backend.listen(0, '127.0.0.1', resolve)
+    })
+    cleanups.push(() => new Promise<void>(resolve => backend.close(() => resolve())))
+    const options = {
+      backendHost: '127.0.0.1',
+      backendPort: portOf(backend),
+      auth: { authenticatedUrl: (base: string) => `${base}/?token=launch-token` },
+    }
+    await assert.rejects(
+      bootstrapUpstreamCookie(options),
+      /browser-session exchange failed with HTTP 200/,
+    )
+    assert.equal(await bootstrapUpstreamCookie({ ...options, allowUnauthenticated: true }), undefined)
+  })
+
   it('allows the caller to override the forwarded-for value', () => {
     const headers = forwardHeaders({
       headers: { host: 'public.example' },
@@ -754,6 +811,53 @@ describe('authenticated reverse proxy', () => {
     assert.equal(under.status, 200)
   })
 
+  it('delivers a readable 413 even while an oversized chunk is still streaming', { timeout: 5_000 }, async () => {
+    const backend = createServer((req, res) => {
+      req.resume()
+      res.writeHead(200, { 'content-type': 'text/plain' })
+      res.end('ok')
+    })
+    await new Promise<void>((resolve, reject) => {
+      backend.once('error', reject)
+      backend.listen(0, '127.0.0.1', resolve)
+    })
+    cleanups.push(() => new Promise<void>(resolve => backend.close(() => resolve())))
+    const token = generateAccessToken()
+    const proxy = await listenProxy({
+      listenHost: '127.0.0.1',
+      listenPort: 0,
+      backendHost: '127.0.0.1',
+      backendPort: portOf(backend),
+      accessToken: token,
+      cookieName: 'session',
+      controlPrefix: '/dsh-reverse-proxy',
+      maxRequestBytes: 1024,
+      upstreamTimeoutMs: 2000,
+    })
+    cleanups.push(proxy.close)
+
+    const login = await http({
+      port: proxy.port,
+      path: '/_dsh_reverse_proxy/login',
+      method: 'POST',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body: `token=${encodeURIComponent(token)}`,
+    })
+    const cookie = login.headers['set-cookie']![0].split(';', 1)[0]
+
+    // One oversized chunk far past the cap: before draining the remainder,
+    // TCP backpressure stalled this exchange until the socket reset, so a
+    // real client saw ECONNRESET instead of the 413.
+    const over = await chunked({
+      port: proxy.port,
+      path: '/api/upload',
+      headers: { cookie },
+      chunks: ['x'.repeat(64 * 1024)],
+    })
+    assert.equal(over.status, 413)
+    assert.equal(over.body, 'request too large\n')
+  })
+
   it('does not treat a slow vision-sized body as an upstream connect timeout', { timeout: 5_000 }, async () => {
     const backend = createServer((req, res) => {
       req.resume()
@@ -898,6 +1002,157 @@ describe('authenticated reverse proxy', () => {
     })
     assert.equal(proxied.status, 200)
     assert.equal(proxied.body, '{"ok":true}')
+  })
+
+  it('allows a slash-command prompt line through /api/session.prompt to outlast the upstream first-byte timeout (#25)', { timeout: 5_000 }, async () => {
+    const backend = createServer((req, res) => {
+      req.resume()
+      req.on('end', () => {
+        setTimeout(() => {
+          res.writeHead(200, { 'content-type': 'application/json' })
+          res.end('{"accepted":true,"command":{"kind":"success"}}')
+        }, 350)
+      })
+    })
+    await new Promise<void>((resolve, reject) => {
+      backend.once('error', reject)
+      backend.listen(0, '127.0.0.1', resolve)
+    })
+    cleanups.push(() => new Promise<void>(resolve => backend.close(() => resolve())))
+    const token = generateAccessToken()
+    const proxy = await listenProxy({
+      listenHost: '127.0.0.1',
+      listenPort: 0,
+      backendHost: '127.0.0.1',
+      backendPort: portOf(backend),
+      accessToken: token,
+      cookieName: 'session',
+      controlPrefix: '/dsh-reverse-proxy',
+      maxRequestBytes: 16 * 1024,
+      upstreamTimeoutMs: 150,
+      commandTimeoutMs: 1_000,
+      loginDelayMs: 0,
+    })
+    cleanups.push(proxy.close)
+
+    const login = await http({
+      port: proxy.port,
+      path: '/_dsh_reverse_proxy/login',
+      method: 'POST',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body: `token=${encodeURIComponent(token)}`,
+    })
+    const cookie = login.headers['set-cookie']![0].split(';', 1)[0]
+
+    // Harness 0.1.0/0.1.1 wire form: /compact is an ordinary session.prompt
+    // whose single text part starts with '/', answered only when the command
+    // handler settles.
+    const proxied = await http({
+      port: proxy.port,
+      path: '/api/session.prompt',
+      method: 'POST',
+      headers: { cookie, 'content-type': 'application/json' },
+      body: JSON.stringify({
+        type: 'client-request',
+        rpcId: 'rpc-1',
+        method: 'session.prompt',
+        payload: {
+          sessionId: 'session-1',
+          mode: 'queue',
+          content: [{ type: 'text', text: '/compact' }],
+        },
+      }),
+    })
+    assert.equal(proxied.status, 200)
+    assert.equal(proxied.body, '{"accepted":true,"command":{"kind":"success"}}')
+  })
+
+  it('keeps the short first-byte window for ordinary /api/session.prompt bodies', { timeout: 5_000 }, async () => {
+    const backend = createServer((req, res) => {
+      req.resume()
+      req.on('end', () => {
+        setTimeout(() => {
+          res.writeHead(200, { 'content-type': 'application/json' })
+          res.end('{"accepted":true}')
+        }, 350)
+      })
+    })
+    await new Promise<void>((resolve, reject) => {
+      backend.once('error', reject)
+      backend.listen(0, '127.0.0.1', resolve)
+    })
+    cleanups.push(() => new Promise<void>(resolve => backend.close(() => resolve())))
+    const token = generateAccessToken()
+    const proxy = await listenProxy({
+      listenHost: '127.0.0.1',
+      listenPort: 0,
+      backendHost: '127.0.0.1',
+      backendPort: portOf(backend),
+      accessToken: token,
+      cookieName: 'session',
+      controlPrefix: '/dsh-reverse-proxy',
+      maxRequestBytes: 16 * 1024,
+      upstreamTimeoutMs: 150,
+      commandTimeoutMs: 1_000,
+      loginDelayMs: 0,
+    })
+    cleanups.push(proxy.close)
+
+    const login = await http({
+      port: proxy.port,
+      path: '/_dsh_reverse_proxy/login',
+      method: 'POST',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body: `token=${encodeURIComponent(token)}`,
+    })
+    const cookie = login.headers['set-cookie']![0].split(';', 1)[0]
+
+    const ordinary = await http({
+      port: proxy.port,
+      path: '/api/session.prompt',
+      method: 'POST',
+      headers: { cookie, 'content-type': 'application/json' },
+      body: JSON.stringify({
+        type: 'client-request',
+        rpcId: 'rpc-2',
+        method: 'session.prompt',
+        payload: {
+          sessionId: 'session-1',
+          mode: 'queue',
+          content: [{ type: 'text', text: 'hello model' }],
+        },
+      }),
+    })
+    assert.equal(ordinary.status, 502)
+
+    // Multi-part content is never a slash command even when the first part
+    // starts with '/', and a non-JSON body stays on the ordinary window.
+    const multiPart = await http({
+      port: proxy.port,
+      path: '/api/session.prompt',
+      method: 'POST',
+      headers: { cookie, 'content-type': 'application/json' },
+      body: JSON.stringify({
+        type: 'client-request',
+        rpcId: 'rpc-3',
+        method: 'session.prompt',
+        payload: {
+          sessionId: 'session-1',
+          mode: 'queue',
+          content: [{ type: 'text', text: '/compact' }, { type: 'text', text: 'more' }],
+        },
+      }),
+    })
+    assert.equal(multiPart.status, 502)
+
+    const notJson = await http({
+      port: proxy.port,
+      path: '/api/session.prompt',
+      method: 'POST',
+      headers: { cookie, 'content-type': 'application/json' },
+      body: 'not json at all',
+    })
+    assert.equal(notJson.status, 502)
   })
 
 

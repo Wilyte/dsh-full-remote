@@ -67,6 +67,20 @@ export interface ProxyServer {
   closeSession: (sessionId: string) => void
 }
 
+/** Minimal host-side auth surface added by Harness 0.1.2. */
+export interface BackendBrowserAuth {
+  authenticatedUrl(baseUrl: string): string
+}
+
+/** Input needed to mint the internal Harness browser-session cookie. */
+export interface BootstrapUpstreamCookieOptions {
+  backendHost: string
+  backendPort: number
+  auth: BackendBrowserAuth
+  /** Accept a successful index response without a cookie when Harness auth is explicitly disabled. */
+  allowUnauthenticated?: boolean
+}
+
 /** Caller-supplied configuration for listenProxy. */
 export interface ProxySpec {
   listenHost: string
@@ -78,7 +92,7 @@ export interface ProxySpec {
   controlPrefix: string
   maxRequestBytes: number
   upstreamTimeoutMs: number
-  /** First-byte wait for host command POSTs such as `/api/commands/execute`. Defaults to the same 5-minute window as `requestTimeoutMs`. */
+  /** First-byte wait for host command POSTs: `/api/commands/execute` (Harness 0.1.2) or a slash-command `session.prompt` body (Harness 0.1.0/0.1.1). Defaults to the same 5-minute window as `requestTimeoutMs`. */
   commandTimeoutMs?: number
   /** Session TTL; optional when a `sessionStore` is supplied (defaults to the store's own default). */
   sessionMaxAgeSeconds?: number
@@ -117,6 +131,8 @@ export interface ProxySpec {
    *  (e.g. Nginx + Authelia) that already authenticated the client. Control
    *  routes stay loopback-only. */
   disableTokenAuth?: boolean
+  /** Browser-session cookie for Harness 0.1.2+; omitted on older Harness builds. */
+  upstreamCookie?: string
 }
 
 /** ProxySpec after listenProxy resolves defaults and internal helpers. */
@@ -303,6 +319,59 @@ function isCommandExecutePath(url: string | undefined): boolean {
   return pathnameOf(url) === '/api/commands/execute'
 }
 
+/**
+ * Harness 0.1.2 wire form of the command call above. On Harness 0.1.0/0.1.1
+ * there is no dedicated command route at all: the composer sends the command
+ * line as an ordinary `session.prompt` (`POST /api/session.prompt`) whose
+ * single text part starts with '/', and the backend only answers after the
+ * command handler settles — so a prompt-shaped body needs the same sniffing
+ * before its first-byte window is chosen.
+ */
+const PROMPT_CARRIER_PATHS = new Set(['/api/session.prompt', '/api/session/prompt'])
+
+function isPromptCarrierPath(url: string | undefined): boolean {
+  return PROMPT_CARRIER_PATHS.has(pathnameOf(url))
+}
+
+/**
+ * Upper bound for the passive command-body sniff. A slash-command prompt is
+ * one short text part, so anything past this cap is an ordinary (possibly
+ * image-carrying) prompt and keeps the normal RPC first-byte window.
+ */
+const COMMAND_SNIFF_LIMIT_BYTES = 64 * 1024
+
+function contentArrayOf(value: unknown, depth = 0): unknown[] | undefined {
+  if (depth > 3 || typeof value !== 'object' || value === null) return undefined
+  const record = value as Record<string, unknown>
+  if (Array.isArray(record.content)) return record.content
+  for (const key of ['payload', 'request', 'args'] as const) {
+    const nested = contentArrayOf(record[key], depth + 1)
+    if (nested !== undefined) return nested
+  }
+  return undefined
+}
+
+/**
+ * Whether a buffered prompt-carrier body is a slash-command line: content is
+ * exactly one text block starting with '/', mirroring Harness's own
+ * admission rule. Any parse miss is inconclusive and keeps the normal RPC
+ * first-byte window — the proxy never rejects based on this sniff.
+ */
+function promptBodyIsSlashCommand(raw: Buffer): boolean {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(raw.toString('utf8'))
+  } catch {
+    return false
+  }
+  const content = contentArrayOf(parsed)
+  if (content === undefined || content.length !== 1) return false
+  const part = content[0]
+  if (typeof part !== 'object' || part === null) return false
+  const { type, text } = part as { type?: unknown, text?: unknown }
+  return type === 'text' && typeof text === 'string' && text.startsWith('/')
+}
+
 function inboundMethodHasBody(method: string | undefined): boolean {
   const verb = (method ?? 'GET').toUpperCase()
   return verb !== 'GET' && verb !== 'HEAD'
@@ -346,6 +415,52 @@ function pipeUpstreamBody(incoming: IncomingMessage, res: ServerResponse, gzip: 
   incoming.pipe(gzipStream).pipe(res)
 }
 
+/**
+ * Exchange Harness's process launch token for its browser-session cookie.
+ * Harness 0.1.2 authenticates the Web index and every `/api` request with
+ * this cookie, while older releases simply have no `authenticatedUrl` method
+ * and therefore never call this compatibility path.
+ */
+export function bootstrapUpstreamCookie(options: BootstrapUpstreamCookieOptions): Promise<string | undefined> {
+  const authority = rewriteLoopbackAuthority(options.backendPort)
+  let launchUrl: URL
+  try {
+    launchUrl = new URL(options.auth.authenticatedUrl(`http://${authority}`))
+  } catch (error) {
+    return Promise.reject(new Error('reverse-proxy: Harness returned an invalid authenticated URL', { cause: error }))
+  }
+  return new Promise((resolve, reject) => {
+    const request = httpRequest({
+      hostname: options.backendHost,
+      port: options.backendPort,
+      method: 'GET',
+      path: `${launchUrl.pathname}${launchUrl.search}`,
+      headers: {
+        host: authority,
+        connection: 'close',
+      },
+    }, (response) => {
+      const setCookies = response.headers['set-cookie'] ?? []
+      const cookie = setCookies.find(value => value.includes('='))?.split(';', 1)[0]
+      const status = response.statusCode ?? 0
+      response.once('end', () => {
+        if (status >= 300 && status < 400 && cookie !== undefined) {
+          resolve(cookie)
+          return
+        }
+        if (options.allowUnauthenticated === true && status >= 200 && status < 300 && cookie === undefined) {
+          resolve(undefined)
+          return
+        }
+        reject(new Error(`reverse-proxy: Harness browser-session exchange failed with HTTP ${String(status)}`))
+      })
+      response.resume()
+    })
+    request.once('error', reject)
+    request.end()
+  })
+}
+
 function proxyRequest(req: IncomingMessage, res: ServerResponse, spec: RuntimeSpec, sessionId: string) {
   const contentLength = Number(req.headers['content-length'] ?? 0)
   if (!Number.isFinite(contentLength) || contentLength < 0 || contentLength > spec.maxRequestBytes) {
@@ -362,6 +477,7 @@ function proxyRequest(req: IncomingMessage, res: ServerResponse, spec: RuntimeSp
       tls: spec.tls === true,
       trustForwardedProto: spec.trustForwardedProto(),
       forwardedFor: effectiveRemoteAddress(req, spec),
+      upstreamCookie: spec.upstreamCookie,
     }),
   }, (incoming) => {
     clearConnectTimeout()
@@ -399,13 +515,18 @@ function proxyRequest(req: IncomingMessage, res: ServerResponse, spec: RuntimeSp
   let received = 0
   let overflow = false
   req.on('data', (chunk) => {
+    if (overflow) return
     received += chunk.length
-    if (!overflow && received > spec.maxRequestBytes) {
+    if (received > spec.maxRequestBytes) {
       overflow = true
       // The upstream request is dead from here on; disarm its connect timer
       // so it cannot fire a second destroy up to upstreamTimeoutMs later.
       clearConnectTimeout()
       req.unpipe(up)
+      // Drain the remainder so the 413 below can flush past TCP backpressure
+      // instead of stalling behind a full socket buffer the client cannot
+      // finish writing into. Draining is cheap: the guard above short-circuits.
+      drainRequest(req)
       up.destroy()
       if (!res.headersSent) {
         sendText(res, 413, 'request too large\n', { connection: 'close' })
@@ -423,12 +544,33 @@ function proxyRequest(req: IncomingMessage, res: ServerResponse, spec: RuntimeSp
   res.once('close', () => {
     if (!res.writableEnded) abortUpstream()
   })
+  // Passive bounded copy of a prompt-carrier body, kept only to decide the
+  // first-byte window at body end. Piping to upstream is untouched; the copy
+  // is dropped the moment it outgrows what a slash-command line can be.
+  let sniffPromptBody = isPromptCarrierPath(req.url) && contentLength <= COMMAND_SNIFF_LIMIT_BYTES
+  let sniffed: Buffer[] = []
+  let sniffedBytes = 0
+  if (sniffPromptBody) {
+    req.on('data', (chunk: Buffer) => {
+      if (!sniffPromptBody) return
+      sniffedBytes += chunk.length
+      if (sniffedBytes > COMMAND_SNIFF_LIMIT_BYTES) {
+        sniffPromptBody = false
+        sniffed = []
+        return
+      }
+      sniffed.push(chunk)
+    })
+  }
   if (inboundMethodHasBody(req.method)) {
     req.once('end', () => {
       if (overflow || res.headersSent) return
-      const firstByteTimeoutMs = isCommandExecutePath(req.url)
-        ? (spec.commandTimeoutMs ?? DEFAULT_COMMAND_TIMEOUT_MS)
-        : spec.upstreamTimeoutMs
+      let firstByteTimeoutMs = spec.upstreamTimeoutMs
+      if (isCommandExecutePath(req.url)) {
+        firstByteTimeoutMs = spec.commandTimeoutMs ?? DEFAULT_COMMAND_TIMEOUT_MS
+      } else if (sniffPromptBody && promptBodyIsSlashCommand(Buffer.concat(sniffed))) {
+        firstByteTimeoutMs = spec.commandTimeoutMs ?? DEFAULT_COMMAND_TIMEOUT_MS
+      }
       armUpstreamFirstByteTimeout(up, firstByteTimeoutMs, () => res.headersSent)
     })
   }
@@ -848,6 +990,7 @@ export function listenProxy(spec: ProxySpec): Promise<ProxyServer> {
       tls: tlsEnabled,
       trustForwardedProto: runtimeSpec.trustForwardedProto(),
       forwardedFor: upgradeRemote,
+      upstreamCookie: runtimeSpec.upstreamCookie,
     })
     headers.connection = 'Upgrade'
     headers.upgrade = req.headers.upgrade ?? 'websocket'
