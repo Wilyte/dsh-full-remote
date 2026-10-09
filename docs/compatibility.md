@@ -1,5 +1,11 @@
 # Compatibility and composition
 
+> **Fork note (Wilyte/dsh-full-remote):** this fork widens the peer range to
+> `<0.3` so it can be deployed on DeepSeek Harness **0.2.0-rc.2**. Upstream
+> does not verify 0.2.x; the widening is a deployment experiment, not a
+> support claim. The rest of this document describes upstream's verified
+> envelope (Harness 0.1.x).
+
 `dsh-full-remote` is a bundle, not a replacement web application. It expects
 the Harness `webServer` and Host `connection` services plus the published
 client runtime/UI-slots packages in the supported peer range (`0.1.1-rc.1`
