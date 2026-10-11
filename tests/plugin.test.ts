@@ -1752,6 +1752,54 @@ describe('websocket upgrade', () => {
     assert.match(attempt.status, /^HTTP\/1\.1 401/)
   })
 
+  it('forwards the upstream browser cookie on the disableTokenAuth upgrade path', async () => {
+    // Regression: the external-auth bypass forwarded the handshake without the
+    // upstream browser-session cookie, so Harness 0.1.2+ answered 401 and the
+    // client showed a permanent "connection lost" retry loop.
+    const seen: Array<string | undefined> = []
+    const backend = createServer((_req, res) => {
+      res.writeHead(200, { 'content-type': 'text/plain' })
+      res.end('ok')
+    })
+    backend.on('upgrade', (req, socket) => {
+      seen.push(req.headers.cookie)
+      socket.write([
+        'HTTP/1.1 101 Switching Protocols',
+        'Connection: Upgrade',
+        'Upgrade: websocket',
+        '',
+        '',
+      ].join('\r\n'))
+      socket.on('data', chunk => { socket.write(chunk) })
+    })
+    await new Promise<void>((resolve, reject) => {
+      backend.once('error', reject)
+      backend.listen(0, '127.0.0.1', resolve)
+    })
+    cleanups.push(() => new Promise<void>(resolve => { backend.close(() => resolve()) }))
+
+    const proxy = await listenProxy({
+      listenHost: '127.0.0.1',
+      listenPort: 0,
+      backendHost: '127.0.0.1',
+      backendPort: portOf(backend),
+      accessToken: generateAccessToken(),
+      cookieName: 'session',
+      controlPrefix: '/dsh-reverse-proxy',
+      maxRequestBytes: 1024,
+      upstreamTimeoutMs: 2000,
+      loginDelayMs: 0,
+      disableTokenAuth: true,
+      upstreamCookie: 'dsh-auth-test=v1.payload.signature',
+    })
+    cleanups.push(proxy.close)
+
+    const attempt = await wsHandshake({ port: proxy.port, path: '/api/remote.mux' })
+    attempt.socket.destroy()
+    assert.match(attempt.status, /^HTTP\/1\.1 101/)
+    assert.equal(seen[0], 'dsh-auth-test=v1.payload.signature')
+  })
+
   it('locks out repeated unauthenticated upgrade attempts', async () => {
     const backend = await echoBackend()
     const token = generateAccessToken()

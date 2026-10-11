@@ -931,10 +931,15 @@ export function listenProxy(spec: ProxySpec): Promise<ProxyServer> {
     }
     if (spec.disableTokenAuth === true) {
       // External auth already applied; forward the upgrade without a session.
+      // The upstream browser-session cookie must still travel with the
+      // handshake: Harness 0.1.2+ gates /api — the WebSocket upgrade included —
+      // on that cookie, so omitting it answers 401 and the client shows a
+      // permanent "connection lost" retry loop.
       const headers = forwardHeaders(req, rewriteAuthority, {
         tls: tlsEnabled,
         trustForwardedProto: runtimeSpec.trustForwardedProto(),
         forwardedFor: upgradeRemote,
+        upstreamCookie: runtimeSpec.upstreamCookie,
       })
       headers.connection = 'Upgrade'
       headers.upgrade = req.headers.upgrade ?? 'websocket'
